@@ -3,17 +3,23 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PWA Chat Notes Sync</title>
+    <meta name="theme-color" content="#075e54">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" href="icon.svg" type="image/svg+xml">
+    <title>PWA Chat Notas</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; background: #e5ddd5; }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; }
+        body { font-family: Arial, sans-serif; margin: 0; display: flex; flex-direction: column; background: #e5ddd5; }
         #auth-panel { background: #075e54; color: white; padding: 10px; display: flex; justify-content: space-between; align-items: center; }
         #chat-container { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
         .msg { background: white; padding: 10px; border-radius: 8px; max-width: 70%; align-self: flex-start; box-shadow: 0 1px 1px rgba(0,0,0,0.1); word-break: break-word; }
         .msg img { max-width: 100%; border-radius: 5px; margin-top: 5px; display: block; }
         .msg a { color: #0275d8; display: block; margin-top: 5px; }
         #input-panel { display: flex; padding: 10px; background: #f0f0f0; gap: 10px; align-items: center; }
-        #text-input { flex: 1; padding: 10px; border-radius: 20px; border: 1px solid #ccc; outline: none; }
+        #text-input { flex: 1; padding: 10px; border-radius: 20px; border: 1px solid #ccc; outline: none; min-width: 0; }
         button { background: #075e54; color: white; border: none; padding: 10px 15px; border-radius: 20px; cursor: pointer; }
+        button:disabled { opacity: .6; cursor: default; }
         #file-input { display: none; }
         .btn-file { background: #128c7e; }
     </style>
@@ -23,199 +29,270 @@
     <div id="auth-panel">
         <strong>PWA Chat Notas</strong>
         <div>
-            <button id="btn-login" onclick="handleAuthClick()">Conectar Drive</button>
-            <button id="btn-sync" onclick="syncWithDrive()" style="display:none;">🔄 Sincronizar</button>
+            <button id="btn-login">Conectar Drive</button>
+            <button id="btn-sync" style="display:none;">🔄 Sincronizar</button>
         </div>
     </div>
 
     <div id="chat-container"></div>
 
     <div id="input-panel">
-        <button class="btn-file" onclick="document.getElementById('file-input').click()">📷</button>
-        <input type="file" id="file-input" accept="image/*" onchange="handleImage(this)">
-        <input type="text" id="text-input" placeholder="Escribe una nota o pega un link..." onkeypress="checkEnter(event)">
-        <button onclick="addTextNote()">Enviar</button>
+        <button class="btn-file" id="btn-file">📷</button>
+        <input type="file" id="file-input" accept="image/*">
+        <input type="text" id="text-input" placeholder="Escribe una nota o pega un link...">
+        <button id="btn-send">Enviar</button>
     </div>
 
     <script>
-        // CONFIGURACIÓN DE CLIENTE
+        // ===== CONFIGURACIÓN =====
         const CLIENT_ID = '502253443882-ln7cauqdm88k6ndnh7ct455nbnarqij6.apps.googleusercontent.com';
         const SCOPES = 'https://www.googleapis.com/auth/drive.appdata';
+        const DRIVE = 'https://www.googleapis.com/drive/v3';
+        const UPLOAD = 'https://www.googleapis.com/upload/drive/v3';
 
         let db;
         let tokenClient;
         let accessToken = null;
+        let syncing = false;
 
-        window.handleAuthClick = function() {
-            if (tokenClient) {
-                tokenClient.requestAccessToken({prompt: 'none'});
-            } else {
-                alert("La API de Google aún no está lista.");
-            }
-        };
+        // ===== Utilidades =====
+        const $ = (id) => document.getElementById(id);
 
-        window.initGoogleAuth = function() {
-            try {
-                tokenClient = google.accounts.oauth2.initTokenClient({
-                    client_id: CLIENT_ID,
-                    scope: SCOPES,
-                    callback: (tokenResponse) => {
-                        if (tokenResponse.error !== undefined) { throw (tokenResponse); }
-                        accessToken = tokenResponse.access_token;
-                        document.getElementById("btn-login").style.display = "none";
-                        document.getElementById("btn-sync").style.display = "inline-block";
-                        window.syncWithDrive();
-                    },
-                });
-            } catch (err) {
-                console.error("Error inicializando Google Auth:", err);
-            }
-        };
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+        function isSafeUrl(u) { return /^https?:\/\//i.test(u); }
 
-        // Inicializar IndexedDB
-        const request = indexedDB.open("ChatNotesDB", 1);
-        request.onupgradeneeded = (e) => {
-            db = e.target.result;
-            db.createObjectStore("notes", { keyPath: "id" });
-        };
-        request.onsuccess = (e) => {
-            db = e.target.result;
-            renderNotes();
-            loadGoogleLibrary();
-        };
-
-        function loadGoogleLibrary() {
-            const script = document.createElement('script');
-            script.src = 'https://accounts.google.com/gsi/client';
-            script.onload = window.initGoogleAuth;
-            document.head.appendChild(script);
+        // ===== IndexedDB (promesas) =====
+        function openDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open("ChatNotesDB", 1);
+                req.onupgradeneeded = (e) => {
+                    const d = e.target.result;
+                    if (!d.objectStoreNames.contains("notes")) d.createObjectStore("notes", { keyPath: "id" });
+                };
+                req.onsuccess = (e) => resolve(e.target.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+        function getAllNotes() {
+            return new Promise((resolve, reject) => {
+                const req = db.transaction("notes", "readonly").objectStore("notes").getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        }
+        function putNotes(notes) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction("notes", "readwrite");
+                const store = tx.objectStore("notes");
+                notes.forEach(n => store.put(n));
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error);
+            });
         }
 
-        function renderNotes() {
-            const container = document.getElementById("chat-container");
+        // ===== Render =====
+        async function renderNotes() {
+            const container = $("chat-container");
+            const notes = (await getAllNotes()).sort((a, b) => a.id - b.id);
             container.innerHTML = "";
-            const tx = db.transaction("notes", "readonly");
-            tx.objectStore("notes").getAll().onsuccess = (e) => {
-                if (!e.target.result) return;
-                const notes = e.target.result.sort((a,b) => a.id - b.id);
-                notes.forEach(note => {
-                    const div = document.createElement("div");
-                    div.className = "msg";
-                    
-                    if (note.text) div.innerHTML += `<div>${note.text}</div>`;
-                    if (note.link) div.innerHTML += `<a href="${note.link}" target="_blank">${note.link}</a>`;
-                    if (note.image) div.innerHTML += `<img src="${note.image}" />`;
-                    
-                    container.appendChild(div);
-                });
-                container.scrollTop = container.scrollHeight;
-            };
+            notes.forEach(note => {
+                const div = document.createElement("div");
+                div.className = "msg";
+                if (note.text) {
+                    const t = document.createElement("div");
+                    t.textContent = note.text;
+                    div.appendChild(t);
+                }
+                if (note.link && isSafeUrl(note.link)) {
+                    const a = document.createElement("a");
+                    a.href = note.link;
+                    a.target = "_blank";
+                    a.rel = "noopener noreferrer";
+                    a.textContent = note.link;
+                    div.appendChild(a);
+                }
+                if (note.image && /^data:image\//.test(note.image)) {
+                    const img = document.createElement("img");
+                    img.src = note.image;
+                    div.appendChild(img);
+                }
+                container.appendChild(div);
+            });
+            container.scrollTop = container.scrollHeight;
         }
 
-        function saveLocal(note) {
-            const tx = db.transaction("notes", "readwrite");
-            tx.objectStore("notes").put(note);
-            tx.oncomplete = () => renderNotes();
+        async function saveLocal(note) {
+            await putNotes([note]);
+            await renderNotes();
         }
 
-        window.addTextNote = function() {
-            const input = document.getElementById("text-input");
+        // ===== Notas =====
+        function addTextNote() {
+            const input = $("text-input");
             const text = input.value.trim();
             if (!text) return;
-
-            const urlRegex = /(https?:\/\/[^\s]+)/g;
-            const hasLink = text.match(urlRegex);
-
-            const note = {
-                id: Date.now(),
-                text: text,
-                link: hasLink ? hasLink[0] : null,
-                image: null
-            };
-
-            saveLocal(note);
+            const m = text.match(/https?:\/\/[^\s]+/);
+            saveLocal({ id: Date.now(), text, link: m ? m[0] : null, image: null });
             input.value = "";
-        };
+        }
 
-        window.checkEnter = function(e) { if (e.key === 'Enter') addTextNote(); };
-
-        window.handleImage = function(input) {
+        function handleImage(input) {
             if (!input.files || !input.files[0]) return;
             const reader = new FileReader();
-            reader.onload = function(e) {
-                const note = {
-                    id: Date.now(),
-                    text: null,
-                    link: null,
-                    image: e.target.result
-                };
-                saveLocal(note);
+            reader.onload = (e) => {
+                saveLocal({ id: Date.now(), text: null, link: null, image: e.target.result });
+                input.value = "";
             };
             reader.readAsDataURL(input.files[0]);
-        };
+        }
 
-        window.syncWithDrive = async function() {
-            if (!accessToken) return alert("Primero conéctate a Google Drive");
-            document.getElementById("btn-sync").innerText = "🔄 Sincronizando...";
-
-            const tx = db.transaction("notes", "readonly");
-            tx.objectStore("notes").getAll().onsuccess = async (e) => {
-                const localNotes = e.target.result || [];
-                
-                try {
-                    const searchUrl = "https://www.googleapis.com/drive/3/files?q=name='backup.json'+and+'appDataFolder'+in+parents&spaces=appDataFolder";
-                    const response = await fetch(searchUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-                    const result = await response.json();
-                    
-                    let fileId = (result.files && result.files.length > 0) ? result.files[0].id : null;
-                    let cloudNotes = [];
-
-                    if (fileId) {
-                        const downloadUrl = `https://www.googleapis.com/drive/3/files/${fileId}?alt=media`;
-                        const dlResponse = await fetch(downloadUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-                        if (dlResponse.ok) {
-                            cloudNotes = await dlResponse.json();
-                        }
+        // ===== Google Auth =====
+        function initGoogleAuth() {
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: CLIENT_ID,
+                scope: SCOPES,
+                callback: (resp) => {
+                    if (resp.error) {
+                        console.error("Error de autenticación:", resp);
+                        alert("No se pudo conectar con Google: " + resp.error);
+                        return;
                     }
-
-                    const notesMap = new Map();
-                    if (Array.isArray(cloudNotes)) {
-                        cloudNotes.forEach(n => { if(n && n.id) notesMap.set(n.id, n); });
-                    }
-                    if (Array.isArray(localNotes)) {
-                        localNotes.forEach(n => { if(n && n.id) notesMap.set(n.id, n); });
-                    }
-                    const mergedNotes = Array.from(notesMap.values());
-
-                    const writeTx = db.transaction("notes", "readwrite");
-                    mergedNotes.forEach(n => writeTx.objectStore("notes").put(n));
-                    
-                    if (!fileId) {
-                        const createMetaResponse = await fetch('https://www.googleapis.com/drive/3/files', {
-                            method: 'POST',
-                            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ name: 'backup.json', parents: ['appDataFolder'] })
-                        });
-                        const newFile = await createMetaResponse.json();
-                        fileId = newFile.id;
-                    }
-
-                    const uploadUrl = `https://www.googleapis.com/upload/drive/3/files/${fileId}?uploadType=media`;
-                    await fetch(uploadUrl, {
-                        method: 'PATCH',
-                        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-                        body: JSON.stringify(mergedNotes)
-                    });
-
-                    renderNotes();
-                    document.getElementById("btn-sync").innerText = "✅ Sincronizado";
-                } catch (err) {
-                    console.error("Error completo en la sincronización:", err);
-                    alert("Error durante la sincronización.");
-                    document.getElementById("btn-sync").innerText = "🔄 Sincronizar";
+                    accessToken = resp.access_token;
+                    localStorage.setItem("drive_consented", "1");
+                    $("btn-login").style.display = "none";
+                    $("btn-sync").style.display = "inline-block";
+                    syncWithDrive();
+                },
+                error_callback: (err) => {
+                    console.error("Error GIS:", err);
+                    if (err && err.type !== "popup_closed") alert("Error de Google: " + err.type);
                 }
-            };
-        };
+            });
+        }
+
+        function loadGoogleLibrary() {
+            const s = document.createElement("script");
+            s.src = "https://accounts.google.com/gsi/client";
+            s.async = true;
+            s.onload = initGoogleAuth;
+            s.onerror = () => console.warn("No se pudo cargar Google (¿sin conexión?)");
+            document.head.appendChild(s);
+        }
+
+        function handleAuthClick() {
+            if (!tokenClient) return alert("La API de Google aún no está lista (¿sin conexión?).");
+            const consented = localStorage.getItem("drive_consented") === "1";
+            tokenClient.requestAccessToken({ prompt: consented ? "" : "consent" });
+        }
+
+        // ===== Drive =====
+        async function driveFetch(url, options = {}) {
+            const res = await fetch(url, {
+                ...options,
+                headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` }
+            });
+            if (res.status === 401) {
+                accessToken = null;
+                $("btn-login").style.display = "inline-block";
+                $("btn-sync").style.display = "none";
+                throw new Error("Sesión caducada, vuelve a conectar Drive");
+            }
+            if (!res.ok) {
+                throw new Error(`Drive ${res.status}: ${await res.text()}`);
+            }
+            return res;
+        }
+
+        async function syncWithDrive() {
+            if (!accessToken) return alert("Primero conéctate a Google Drive");
+            if (syncing) return;
+            syncing = true;
+            const btn = $("btn-sync");
+            btn.disabled = true;
+            btn.textContent = "🔄 Sincronizando...";
+
+            try {
+                const localNotes = await getAllNotes();
+
+                // 1. Buscar backup.json en appDataFolder
+                const q = encodeURIComponent("name='backup.json'");
+                const list = await (await driveFetch(
+                    `${DRIVE}/files?q=${q}&spaces=appDataFolder&fields=files(id,name)`
+                )).json();
+                let fileId = list.files && list.files.length ? list.files[0].id : null;
+
+                // 2. Descargar notas de la nube
+                let cloudNotes = [];
+                if (fileId) {
+                    const dl = await driveFetch(`${DRIVE}/files/${fileId}?alt=media`);
+                    try { cloudNotes = await dl.json(); } catch { cloudNotes = []; }
+                }
+
+                // 3. Fusionar por id
+                const map = new Map();
+                [cloudNotes, localNotes].forEach(arr => {
+                    if (Array.isArray(arr)) arr.forEach(n => { if (n && n.id) map.set(n.id, n); });
+                });
+                const merged = Array.from(map.values());
+
+                // 4. Guardar fusionado en local
+                await putNotes(merged);
+
+                // 5. Crear archivo si no existe
+                if (!fileId) {
+                    const created = await (await driveFetch(`${DRIVE}/files`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ name: "backup.json", parents: ["appDataFolder"] })
+                    })).json();
+                    fileId = created.id;
+                }
+
+                // 6. Subir contenido
+                await driveFetch(`${UPLOAD}/files/${fileId}?uploadType=media`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(merged)
+                });
+
+                await renderNotes();
+                btn.textContent = "✅ Sincronizado";
+                setTimeout(() => { if (!syncing) btn.textContent = "🔄 Sincronizar"; }, 2500);
+            } catch (err) {
+                console.error("Error en la sincronización:", err);
+                alert("Error durante la sincronización:\n" + err.message);
+                btn.textContent = "🔄 Sincronizar";
+            } finally {
+                syncing = false;
+                btn.disabled = false;
+            }
+        }
+
+        // ===== Arranque =====
+        (async function init() {
+            $("btn-login").addEventListener("click", handleAuthClick);
+            $("btn-sync").addEventListener("click", syncWithDrive);
+            $("btn-send").addEventListener("click", addTextNote);
+            $("btn-file").addEventListener("click", () => $("file-input").click());
+            $("file-input").addEventListener("change", (e) => handleImage(e.target));
+            $("text-input").addEventListener("keydown", (e) => { if (e.key === "Enter") addTextNote(); });
+
+            try {
+                db = await openDB();
+                await renderNotes();
+            } catch (e) {
+                console.error("Error IndexedDB:", e);
+                alert("No se pudo abrir la base de datos local.");
+            }
+            loadGoogleLibrary();
+
+            if ("serviceWorker" in navigator) {
+                navigator.serviceWorker.register("sw.js").catch(err => console.error("SW error:", err));
+            }
+        })();
     </script>
 </body>
 </html>

@@ -1,0 +1,13 @@
+{
+  "name": "PWA Chat Notas",
+  "short_name": "Notas",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#e5ddd5",
+  "theme_color": "#075e54",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
