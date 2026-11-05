@@ -38,7 +38,7 @@
     </div>
 
     <script>
-        // CONFIGURACIÓN DE CLIENTE (¡Pon aquí tu ID real!)
+        // CONFIGURACIÓN DE CLIENTE
         const CLIENT_ID = '502253443882-ln7cauqdm88k6ndnh7ct455nbnarqij6.apps.googleusercontent.com://googleusercontent.com';
         const SCOPES = 'https://googleapis.com';
 
@@ -46,27 +46,16 @@
         let tokenClient;
         let accessToken = null;
 
-        // 1. INICIALIZAR INDEXEDDB
-        const request = indexedDB.open("ChatNotesDB", 1);
-        request.onupgradeneeded = (e) => {
-            db = e.target.result;
-            db.createObjectStore("notes", { keyPath: "id" });
-        };
-        request.onsuccess = (e) => {
-            db = e.target.result;
-            renderNotes();
-            loadGoogleLibrary(); // Cargar la API de Google después de IndexedDB
+        // Declarar las funciones en el plano global desde el inicio exacto del script
+        window.handleAuthClick = function() {
+            if (tokenClient) {
+                tokenClient.requestAccessToken({prompt: 'consent'});
+            } else {
+                alert("La API de Google aún no está lista.");
+            }
         };
 
-        // Carga dinámica del script oficial de Google
-        function loadGoogleLibrary() {
-            const script = document.createElement('script');
-            script.src = 'https://google.com';
-            script.onload = initGoogleAuth;
-            document.head.appendChild(script);
-        }
-
-        function initGoogleAuth() {
+        window.initGoogleAuth = function() {
             try {
                 tokenClient = google.accounts.oauth2.initTokenClient({
                     client_id: CLIENT_ID,
@@ -82,24 +71,29 @@
             } catch (err) {
                 console.error("Error inicializando Google Auth:", err);
             }
-        }
-
-        window.handleAuthClick = function() {
-            if (tokenClient) {
-                tokenClient.requestAccessToken({prompt: 'consent'});
-            } else {
-                alert("La API de Google aún no está lista.");
-            }
         };
 
-        // Guardar nota local
-        function saveLocal(note) {
-            const tx = db.transaction("notes", "readwrite");
-            tx.objectStore("notes").put(note);
-            tx.oncomplete = () => renderNotes();
+        // Inicializar la base de datos local IndexedDB
+        const request = indexedDB.open("ChatNotesDB", 1);
+        request.onupgradeneeded = (e) => {
+            db = e.target.result;
+            db.createObjectStore("notes", { keyPath: "id" });
+        };
+        request.onsuccess = (e) => {
+            db = e.target.result;
+            renderNotes();
+            loadGoogleLibrary();
+        };
+
+        // Carga dinámica del script oficial de Google
+        function loadGoogleLibrary() {
+            const script = document.createElement('script');
+            script.src = 'https://google.com';
+            script.onload = window.initGoogleAuth;
+            document.head.appendChild(script);
         }
 
-        // Renderizar notas en pantalla
+        // Renderizar notas locales
         function renderNotes() {
             const container = document.getElementById("chat-container");
             container.innerHTML = "";
@@ -120,7 +114,12 @@
             };
         }
 
-        // 2. ACCIONES DE NOTAS
+        function saveLocal(note) {
+            const tx = db.transaction("notes", "readwrite");
+            tx.objectStore("notes").put(note);
+            tx.oncomplete = () => renderNotes();
+        }
+
         window.addTextNote = function() {
             const input = document.getElementById("text-input");
             const text = input.value.trim();
@@ -157,7 +156,6 @@
             reader.readAsDataURL(input.files[0]);
         };
 
-        // 4. SINCRONIZACIÓN CON GOOGLE DRIVE (App Data Folder)
         window.syncWithDrive = async function() {
             if (!accessToken) return alert("Primero conéctate a Google Drive");
             document.getElementById("btn-sync").innerText = "🔄 Sincronizando...";
@@ -171,7 +169,6 @@
                     const response = await fetch(searchUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
                     const result = await response.json();
                     
-                    // CORRECCIÓN AQUÍ: Acceso correcto al ID del primer elemento encontrado
                     let fileId = (result.files && result.files.length > 0) ? result.files[0].id : null;
                     let cloudNotes = [];
 
@@ -218,3 +215,8 @@
                     document.getElementById("btn-sync").innerText = "✅ Sincronizado";
                 } catch (err) {
                     console.error(err);
+                    alert("Error durante la sincronización");
+                    document.getElementById("btn-sync").innerText = "🔄 Sincronizar";
+                }
+            };
+        };
