@@ -9,7 +9,7 @@
         #auth-panel { background: #075e54; color: white; padding: 10px; display: flex; justify-content: space-between; align-items: center; }
         #chat-container { flex: 1; overflow-y: auto; padding: 15px; display: flex; flex-direction: column; gap: 10px; }
         .msg { background: white; padding: 10px; border-radius: 8px; max-width: 70%; align-self: flex-start; box-shadow: 0 1px 1px rgba(0,0,0,0.1); word-break: break-word; }
-        .msg img { max-width: 100%; border-radius: 5px; margin-top: 5px; }
+        .msg img { max-width: 100%; border-radius: 5px; margin-top: 5px; display: block; }
         .msg a { color: #0275d8; display: block; margin-top: 5px; }
         #input-panel { display: flex; padding: 10px; background: #f0f0f0; gap: 10px; align-items: center; }
         #text-input { flex: 1; padding: 10px; border-radius: 20px; border: 1px solid #ccc; outline: none; }
@@ -37,31 +37,36 @@
         <button onclick="addTextNote()">Enviar</button>
     </div>
 
-    <!-- Scripts de Google API -->
-    <script src="https://google.com" async defer></script>
-    
-       <!-- Scripts de Google API -->
-    <script src="https://google.com"></script>
-    
     <script>
-        // CLIENT CONFIGURATION (Reemplaza con tu ID real de Google Cloud)
-        const CLIENT_ID = 'TU_ID_DE_CLIENTE_DE_://googleusercontent.com';
+        // CONFIGURACIÓN DE CLIENTE (¡Pon aquí tu ID real!)
+        const CLIENT_ID = '502253443882-ln7cauqdm88k6ndnh7ct455nbnarqij6.apps.googleusercontent.com://googleusercontent.com';
         const SCOPES = 'https://googleapis.com';
 
         let db;
         let tokenClient;
         let accessToken = null;
 
-        // Declarar las funciones de autenticación en el plano global inmediatamente
-        window.handleAuthClick = function() {
-            if (!tokenClient) {
-                alert("La librería de Google aún se está cargando. Espera un segundo y vuelve a intentarlo.");
-                return;
-            }
-            tokenClient.requestAccessToken({prompt: 'consent'});
+        // 1. INICIALIZAR INDEXEDDB
+        const request = indexedDB.open("ChatNotesDB", 1);
+        request.onupgradeneeded = (e) => {
+            db = e.target.result;
+            db.createObjectStore("notes", { keyPath: "id" });
+        };
+        request.onsuccess = (e) => {
+            db = e.target.result;
+            renderNotes();
+            loadGoogleLibrary(); // Cargar la API de Google después de IndexedDB
         };
 
-        window.initGoogleAuth = function() {
+        // Carga dinámica del script oficial de Google
+        function loadGoogleLibrary() {
+            const script = document.createElement('script');
+            script.src = 'https://google.com';
+            script.onload = initGoogleAuth;
+            document.head.appendChild(script);
+        }
+
+        function initGoogleAuth() {
             try {
                 tokenClient = google.accounts.oauth2.initTokenClient({
                     client_id: CLIENT_ID,
@@ -77,22 +82,13 @@
             } catch (err) {
                 console.error("Error inicializando Google Auth:", err);
             }
-        };
+        }
 
-        // 1. INICIALIZAR INDEXEDDB
-        const request = indexedDB.open("ChatNotesDB", 1);
-        request.onupgradeneeded = (e) => {
-            db = e.target.result;
-            db.createObjectStore("notes", { keyPath: "id" });
-        };
-        request.onsuccess = (e) => {
-            db = e.target.result;
-            renderNotes();
-            // Inicializar auth una vez que IndexedDB está listo y la librería cargada
-            if (typeof google !== 'undefined' && google.accounts) {
-                initGoogleAuth();
+        window.handleAuthClick = function() {
+            if (tokenClient) {
+                tokenClient.requestAccessToken({prompt: 'consent'});
             } else {
-                window.onload = initGoogleAuth;
+                alert("La API de Google aún no está lista.");
             }
         };
 
@@ -147,20 +143,18 @@
         window.checkEnter = function(e) { if (e.key === 'Enter') addTextNote(); };
 
         window.handleImage = function(input) {
-            const file = input.files[0];
-            if (!file) return;
-
+            if (!input.files || !input.files[0]) return;
             const reader = new FileReader();
             reader.onload = function(e) {
                 const note = {
                     id: Date.now(),
-                    text: "Imagen enviada",
+                    text: null,
                     link: null,
                     image: e.target.result
                 };
                 saveLocal(note);
             };
-            reader.readAsDataURL(file);
+            reader.readAsDataURL(input.files[0]);
         };
 
         // 4. SINCRONIZACIÓN CON GOOGLE DRIVE (App Data Folder)
@@ -177,6 +171,7 @@
                     const response = await fetch(searchUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
                     const result = await response.json();
                     
+                    // CORRECCIÓN AQUÍ: Acceso correcto al ID del primer elemento encontrado
                     let fileId = (result.files && result.files.length > 0) ? result.files[0].id : null;
                     let cloudNotes = [];
 
@@ -223,10 +218,3 @@
                     document.getElementById("btn-sync").innerText = "✅ Sincronizado";
                 } catch (err) {
                     console.error(err);
-                    alert("Error durante la sincronización");
-                    document.getElementById("btn-sync").innerText = "🔄 Sincronizar";
-                }
-            };
-        };
-    </script>
-
