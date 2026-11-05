@@ -1,4 +1,4 @@
-const CACHE = "chat-notas-v1";
+const CACHE = "chat-notas-v2";
 const APP_SHELL = ["./", "./index.html", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
