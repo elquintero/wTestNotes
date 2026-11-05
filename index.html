@@ -46,10 +46,9 @@
         let tokenClient;
         let accessToken = null;
 
-        // Funciones globales de Google Auth
         window.handleAuthClick = function() {
             if (tokenClient) {
-                tokenClient.requestAccessToken({prompt: 'consent'});
+                tokenClient.requestAccessToken({prompt: 'none'});
             } else {
                 alert("La API de Google aún no está lista.");
             }
@@ -85,7 +84,6 @@
             loadGoogleLibrary();
         };
 
-        // Carga dinámica de la librería de Google
         function loadGoogleLibrary() {
             const script = document.createElement('script');
             script.src = 'https://accounts.google.com/gsi/client';
@@ -93,12 +91,12 @@
             document.head.appendChild(script);
         }
 
-        // Renderizar interfaz de mensajes
         function renderNotes() {
             const container = document.getElementById("chat-container");
             container.innerHTML = "";
             const tx = db.transaction("notes", "readonly");
             tx.objectStore("notes").getAll().onsuccess = (e) => {
+                if (!e.target.result) return;
                 const notes = e.target.result.sort((a,b) => a.id - b.id);
                 notes.forEach(note => {
                     const div = document.createElement("div");
@@ -156,14 +154,13 @@
             reader.readAsDataURL(input.files[0]);
         };
 
-        // Sincronización en la carpeta AppData de Google Drive
         window.syncWithDrive = async function() {
             if (!accessToken) return alert("Primero conéctate a Google Drive");
             document.getElementById("btn-sync").innerText = "🔄 Sincronizando...";
 
             const tx = db.transaction("notes", "readonly");
             tx.objectStore("notes").getAll().onsuccess = async (e) => {
-                const localNotes = e.target.result;
+                const localNotes = e.target.result || [];
                 
                 try {
                     const searchUrl = "https://www.googleapis.com/drive/3/files?q=name='backup.json'+and+'appDataFolder'+in+parents&spaces=appDataFolder";
@@ -176,56 +173,45 @@
                     if (fileId) {
                         const downloadUrl = `https://www.googleapis.com/drive/3/files/${fileId}?alt=media`;
                         const dlResponse = await fetch(downloadUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-                        cloudNotes = await dlResponse.json();
+                        if (dlResponse.ok) {
+                            cloudNotes = await dlResponse.json();
+                        }
                     }
 
                     const notesMap = new Map();
-                    cloudNotes.forEach(n => notesMap.set(n.id, n));
-                    localNotes.forEach(n => notesMap.set(n.id, n));
+                    if (Array.isArray(cloudNotes)) {
+                        cloudNotes.forEach(n => { if(n && n.id) notesMap.set(n.id, n); });
+                    }
+                    if (Array.isArray(localNotes)) {
+                        localNotes.forEach(n => { if(n && n.id) notesMap.set(n.id, n); });
+                    }
                     const mergedNotes = Array.from(notesMap.values());
 
                     const writeTx = db.transaction("notes", "readwrite");
                     mergedNotes.forEach(n => writeTx.objectStore("notes").put(n));
                     
-                    const metadata = { name: 'backup.json', parents: ['appDataFolder'] };
-                    const boundary = 'foo_bar_baz';
-                    
-                    let method = 'POST';
-                    let uploadUrl = 'https://www.googleapis.com/upload/drive/3/files?uploadType=multipart';
-                    
-                    if (fileId) {
-                        method = 'PATCH';
-                        uploadUrl = `https://www.googleapis.com/upload/drive/3/files/${fileId}?uploadType=multipart`;
+                    if (!fileId) {
+                        const createMetaResponse = await fetch('https://www.googleapis.com/drive/3/files', {
+                            method: 'POST',
+                            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ name: 'backup.json', parents: ['appDataFolder'] })
+                        });
+                        const newFile = await createMetaResponse.json();
+                        fileId = newFile.id;
                     }
 
-                    const multipartRequestBody =
-                        `
---${boundary}
-Content-Type: application/json; charset=UTF-8
-
-${JSON.stringify(metadata)}` +
-                        `
---${boundary}
-Content-Type: application/json
-
-${JSON.stringify(mergedNotes)}` +
-                        `
---${boundary}--`;
-
+                    const uploadUrl = `https://www.googleapis.com/upload/drive/3/files/${fileId}?uploadType=media`;
                     await fetch(uploadUrl, {
-                        method: method,
-                        headers: {
-                            'Authorization': `Bearer ${accessToken}`,
-                            'Content-Type': `multipart/related; boundary=${boundary}`
-                        },
-                        body: multipartRequestBody
+                        method: 'PATCH',
+                        headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+                        body: JSON.stringify(mergedNotes)
                     });
 
                     renderNotes();
                     document.getElementById("btn-sync").innerText = "✅ Sincronizado";
                 } catch (err) {
-                    console.error(err);
-                    alert("Error durante la sincronización");
+                    console.error("Error completo en la sincronización:", err);
+                    alert("Error durante la sincronización.");
                     document.getElementById("btn-sync").innerText = "🔄 Sincronizar";
                 }
             };
