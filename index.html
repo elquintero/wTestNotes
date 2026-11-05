@@ -40,14 +40,44 @@
     <!-- Scripts de Google API -->
     <script src="https://google.com" async defer></script>
     
+       <!-- Scripts de Google API -->
+    <script src="https://google.com"></script>
+    
     <script>
-        // CLIENT CONFIGURATION (Reemplaza con tus datos de Google Cloud)
-        const CLIENT_ID = '502253443882-ln7cauqdm88k6ndnh7ct455nbnarqij6.apps.googleusercontent.com://googleusercontent.com';
+        // CLIENT CONFIGURATION (Reemplaza con tu ID real de Google Cloud)
+        const CLIENT_ID = 'TU_ID_DE_CLIENTE_DE_://googleusercontent.com';
         const SCOPES = 'https://googleapis.com';
 
         let db;
         let tokenClient;
         let accessToken = null;
+
+        // Declarar las funciones de autenticación en el plano global inmediatamente
+        window.handleAuthClick = function() {
+            if (!tokenClient) {
+                alert("La librería de Google aún se está cargando. Espera un segundo y vuelve a intentarlo.");
+                return;
+            }
+            tokenClient.requestAccessToken({prompt: 'consent'});
+        };
+
+        window.initGoogleAuth = function() {
+            try {
+                tokenClient = google.accounts.oauth2.initTokenClient({
+                    client_id: CLIENT_ID,
+                    scope: SCOPES,
+                    callback: (tokenResponse) => {
+                        if (tokenResponse.error !== undefined) { throw (tokenResponse); }
+                        accessToken = tokenResponse.access_token;
+                        document.getElementById("btn-login").style.display = "none";
+                        document.getElementById("btn-sync").style.display = "inline-block";
+                        syncWithDrive();
+                    },
+                });
+            } catch (err) {
+                console.error("Error inicializando Google Auth:", err);
+            }
+        };
 
         // 1. INICIALIZAR INDEXEDDB
         const request = indexedDB.open("ChatNotesDB", 1);
@@ -58,7 +88,12 @@
         request.onsuccess = (e) => {
             db = e.target.result;
             renderNotes();
-            initGoogleAuth();
+            // Inicializar auth una vez que IndexedDB está listo y la librería cargada
+            if (typeof google !== 'undefined' && google.accounts) {
+                initGoogleAuth();
+            } else {
+                window.onload = initGoogleAuth;
+            }
         };
 
         // Guardar nota local
@@ -90,7 +125,7 @@
         }
 
         // 2. ACCIONES DE NOTAS
-        function addTextNote() {
+        window.addTextNote = function() {
             const input = document.getElementById("text-input");
             const text = input.value.trim();
             if (!text) return;
@@ -107,11 +142,11 @@
 
             saveLocal(note);
             input.value = "";
-        }
+        };
 
-        function checkEnter(e) { if (e.key === 'Enter') addTextNote(); }
+        window.checkEnter = function(e) { if (e.key === 'Enter') addTextNote(); };
 
-        function handleImage(input) {
+        window.handleImage = function(input) {
             const file = input.files[0];
             if (!file) return;
 
@@ -121,70 +156,44 @@
                     id: Date.now(),
                     text: "Imagen enviada",
                     link: null,
-                    image: e.target.result // Base64 string
+                    image: e.target.result
                 };
                 saveLocal(note);
             };
             reader.readAsDataURL(file);
-        }
-
-        // 3. AUTENTICACIÓN GOOGLE DRIVE
-        function initGoogleAuth() {
-            tokenClient = google.accounts.oauth2.initTokenClient({
-                client_id: CLIENT_ID,
-                scope: SCOPES,
-                callback: (tokenResponse) => {
-                    if (tokenResponse.error !== undefined) { throw (tokenResponse); }
-                    accessToken = tokenResponse.access_token;
-                    document.getElementById("btn-login").style.display = "none";
-                    document.getElementById("btn-sync").style.display = "inline-block";
-                    syncWithDrive(); // Sincroniza al iniciar sesión
-                },
-            });
-        }
-
-        function handleAuthClick() {
-            // Solicita el token (abrirá el popup de Google)
-            tokenClient.requestAccessToken({prompt: 'consent'});
-        }
+        };
 
         // 4. SINCRONIZACIÓN CON GOOGLE DRIVE (App Data Folder)
-        async function syncWithDrive() {
+        window.syncWithDrive = async function() {
             if (!accessToken) return alert("Primero conéctate a Google Drive");
             document.getElementById("btn-sync").innerText = "🔄 Sincronizando...";
 
-            // Obtener todas las notas locales
             const tx = db.transaction("notes", "readonly");
             tx.objectStore("notes").getAll().onsuccess = async (e) => {
                 const localNotes = e.target.result;
                 
                 try {
-                    // Buscar si ya existe el archivo 'backup.json' en la carpeta appDataFolder
                     const searchUrl = "https://googleapis.com";
                     const response = await fetch(searchUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
                     const result = await response.json();
                     
-                    let fileId = result.files.length > 0 ? result.files[0].id : null;
+                    let fileId = (result.files && result.files.length > 0) ? result.files[0].id : null;
                     let cloudNotes = [];
 
                     if (fileId) {
-                        // Si existe, descargar el archivo de la nube
                         const downloadUrl = `https://googleapis.com{fileId}?alt=media`;
                         const dlResponse = await fetch(downloadUrl, { headers: { 'Authorization': `Bearer ${accessToken}` } });
                         cloudNotes = await dlResponse.json();
                     }
 
-                    // Fusión simple basada en IDs (Timestamp)
                     const notesMap = new Map();
                     cloudNotes.forEach(n => notesMap.set(n.id, n));
                     localNotes.forEach(n => notesMap.set(n.id, n));
                     const mergedNotes = Array.from(notesMap.values());
 
-                    // Guardar de vuelta en la base de datos local lo sincronizado
                     const writeTx = db.transaction("notes", "readwrite");
                     mergedNotes.forEach(n => writeTx.objectStore("notes").put(n));
                     
-                    // Subir los datos combinados a Google Drive
                     const metadata = { name: 'backup.json', parents: ['appDataFolder'] };
                     const boundary = 'foo_bar_baz';
                     
@@ -216,3 +225,8 @@
                     console.error(err);
                     alert("Error durante la sincronización");
                     document.getElementById("btn-sync").innerText = "🔄 Sincronizar";
+                }
+            };
+        };
+    </script>
+
